@@ -16,7 +16,7 @@ from scipy.special import logsumexp
 
 from cogwheel import likelihood
 from cogwheel.likelihood.relative_binning import BaseLinearFree
-from cogwheel.waveform import FORCE_NNLO_ANGLES, compute_hplus_hcross_by_mode
+from cogwheel.waveform import FORCE_NNLO_ANGLES, compute_hplus_hcross_by_mode, APPROXIMANTS
 from cogwheel.waveform_models.xode import compute_hplus_hcross_by_mode_xode
 
 lalsimulation_commands = FORCE_NNLO_ANGLES
@@ -34,9 +34,8 @@ def compute_hplus_hcross_safe(
 ):
     """
     Compute hplus and hcross for a given frequency, parameters and
-    approximant. If the approximant is IMRPhenomXODE, use the
-    specialized function for that approximant. Otherwise, use the
-    generic function.
+    approximant. Uses the approximant's registered function if available,
+    otherwise falls back to the generic function.
 
     Parameters:
     f: array of frequencies
@@ -49,6 +48,16 @@ def compute_hplus_hcross_safe(
     """
     if approximant == "IMRPhenomXODE":
         hplus_hcross_modes = compute_hplus_hcross_by_mode_xode(
+            f,
+            par_dic,
+            approximant=approximant,
+            harmonic_modes=harmonic_modes,
+            lal_dic=lal_dic,
+        )
+    elif approximant in APPROXIMANTS:
+        # Use the approximant's registered function (supports custom approximants)
+        approx_func = APPROXIMANTS[approximant].hplus_hcross_by_mode_func
+        hplus_hcross_modes = approx_func(
             f,
             par_dic,
             approximant=approximant,

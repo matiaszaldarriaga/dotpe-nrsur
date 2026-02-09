@@ -77,6 +77,7 @@ def run_for_single_detector(
     m_arr: NDArray[np.int64] = np.array([2, 1, 3, 4]),
     n_t: int = 128,
     size_limit: int = 10**7,
+    precomputed_summary: tuple = None,
 ) -> Union[NDArray[np.float64], Tuple[NDArray[np.float64], NDArray[np.complex128]]]:
     """
     Perform single detector likelihood evaluations and return the likelihoods.
@@ -103,6 +104,7 @@ def run_for_single_detector(
         size_limit=size_limit,
         ext_block_size=single_detector_blocksize,
         int_block_size=single_detector_blocksize,
+        precomputed_summary=precomputed_summary,
     )
 
     if h_impb is None:
@@ -209,11 +211,25 @@ def collect_int_samples_from_single_detectors(
     else:
         intrinsic_indices = np.arange(i_int_start, i_int_start + n_int)
 
+    # Pre-compute summary weights once per detector (avoids redundant waveform
+    # generation across batches — critical for slow approximants like NRSur7dq4).
+    n_batches = -(len(intrinsic_indices) // -single_detector_blocksize)
+    precomputed_summaries = {}
+    if n_batches > 1:
+        from .sample_processing import IntrinsicSampleProcessor
+        waveform_dir = bank_folder / "waveforms"
+        for det_name in event_data.detector_names:
+            event_data_1d = extract_single_detector_event_data(event_data, det_name)
+            wfg = WaveformGenerator.from_event_data(event_data_1d, approximant)
+            likelihood_linfree = LinearFree(event_data_1d, wfg, par_dic_0, fbin)
+            isp = IntrinsicSampleProcessor(likelihood_linfree, waveform_dir)
+            precomputed_summaries[det_name] = isp.get_summary()
+
     lnlike_di = np.zeros((len(event_data.detector_names), len(intrinsic_indices)))
     for batch_start in tqdm(
         range(0, len(intrinsic_indices), single_detector_blocksize),
         desc="Processing intrinsic batches",
-        total=-(len(intrinsic_indices) // -single_detector_blocksize),
+        total=n_batches,
     ):
         batch_end = min(batch_start + single_detector_blocksize, len(intrinsic_indices))
         batch_intrinsic_indices = intrinsic_indices[batch_start:batch_end]
@@ -233,6 +249,7 @@ def collect_int_samples_from_single_detectors(
                 m_arr,
                 n_t,
                 size_limit=10**7,
+                precomputed_summary=precomputed_summaries.get(det_name),
             )
             if h_impb is None:
                 lnlike_di[d, batch_start:batch_end] = temp[0]
@@ -817,9 +834,16 @@ def prepare_run_objects(
     coherent_posterior_kwargs = (
         coherent_posterior_kwargs if coherent_posterior_kwargs else {}
     )
+    # Use a cheap approximant for reference finding (par_dic_0).
+    # The bank approximant (e.g., NRSur7dq4) is expensive and not needed here
+    # because coherent_posterior is only used for:
+    # 1. Finding par_dic_0 (reference parameters for relative binning)
+    # 2. Getting the prior
+    # Actual likelihood evaluations use pre-computed bank waveforms, not this.
+    ref_approximant = "IMRPhenomXAS"  # Fast, always available
     posterior_kwargs = {
         "likelihood_class": RelativeBinningLikelihood,
-        "approximant": approximant,
+        "approximant": ref_approximant,
         "prior_class": "CartesianIASPrior",
     } | coherent_posterior_kwargs
 

@@ -67,6 +67,7 @@ class SingleDetectorProcessor(JSONMixin, Loggable):
         dir_permissions=DIR_PERMISSIONS,
         file_permissions=FILE_PERMISSIONS,
         full_intrinsic_indices=None,
+        precomputed_summary=None,
     ):
         """
         Initialization of the SingleDetectorProcessor.
@@ -104,6 +105,10 @@ class SingleDetectorProcessor(JSONMixin, Loggable):
         full_bank_indices : np.ndarray, optional
             The indices of the full intrinsic bank. If None, all samples
             are used.
+        precomputed_summary : tuple, optional
+            Pre-computed (dh_weights_dmpb, hh_weights_dmppb) from a previous
+            get_summary() call. If provided, skips the expensive summary
+            computation. Useful when the same summary applies across batches.
         """
 
         self.dir_permissions = dir_permissions
@@ -123,9 +128,12 @@ class SingleDetectorProcessor(JSONMixin, Loggable):
             n_phi=n_phi, m_arr=np.array(m_arr)
         )
 
-        self.dh_weights_dmpb, self.hh_weights_dmppb = (
-            self.intrinsic_sample_processor.get_summary()
-        )
+        if precomputed_summary is not None:
+            self.dh_weights_dmpb, self.hh_weights_dmppb = precomputed_summary
+        else:
+            self.dh_weights_dmpb, self.hh_weights_dmppb = (
+                self.intrinsic_sample_processor.get_summary()
+            )
 
         self.cur_rundir = None  # current rundir
 

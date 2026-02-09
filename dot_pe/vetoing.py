@@ -299,24 +299,41 @@ def create_posterior(event_data: EventData, bank_folder: Union[str, Path]) -> Po
         fbin = np.array([bank_config["fbin"]])
         mchirp_guess = np.mean(mchirp_range)
 
-    posterior_kwargs = {
-        "likelihood_class": RelativeBinningLikelihood,
-        "approximant": approximant,
-        "prior_class": "CartesianIASPrior",
-    }
+    # Use IMRPhenomXAS for reference waveform finding (fast, broad parameter support)
+    # This avoids issues with approximants like NRSur7dq4 that have restricted
+    # parameter ranges (e.g., q >= 1/6) which the optimizer may violate.
+    # The reference waveform only needs to be "close enough" for relative binning.
+    ref_approximant = 'IMRPhenomXAS'
+
     likelihood_kwargs = {"fbin": fbin, "pn_phase_tol": None}
     ref_wf_finder_kwargs = {
         "time_range": (-1e-1, +1e-1),
         "mchirp_range": mchirp_range,
     }
 
-    post = Posterior.from_event(
-        event=event_data,
+    # Step 1: Find reference waveform using fast, broadly-supported approximant
+    from cogwheel.likelihood.reference_waveform_finder import ReferenceWaveformFinder
+    ref_wf_finder = ReferenceWaveformFinder.from_event(
+        event_data,
         mchirp_guess=mchirp_guess,
-        likelihood_kwargs=likelihood_kwargs,
-        ref_wf_finder_kwargs=ref_wf_finder_kwargs,
-        **posterior_kwargs,
+        approximant=ref_approximant,
+        **ref_wf_finder_kwargs
     )
+
+    # Step 2: Create likelihood using the bank's approximant (may be NRSur7dq4, etc.)
+    likelihood = RelativeBinningLikelihood.from_reference_waveform_finder(
+        ref_wf_finder,
+        approximant=approximant,
+        **likelihood_kwargs
+    )
+
+    # Step 3: Create prior from reference waveform finder
+    from cogwheel import gw_prior
+    prior_class = gw_prior.prior_registry["CartesianIASPrior"]
+    prior = prior_class.from_reference_waveform_finder(ref_wf_finder)
+
+    # Step 4: Create posterior
+    post = Posterior(prior, likelihood)
 
     return post
 
