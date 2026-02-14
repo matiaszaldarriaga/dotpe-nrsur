@@ -982,25 +982,39 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
         used_sample_idx_batch : list[int]
             List of sample indices for accepted objects.
         """
-        # Filter in batch order (preserves shuffled order) with optional early exit
-        valid_sample_indices = []
-        valid_bank_indices = []
-        for sample_idx, bank_idx in zip(batch_sample_idx, batch_bank_idx):
-            lnl = self.likelihood.lnlike(
-                banks[int(bank_idx)].iloc[int(sample_idx)].to_dict()
-                | config.DEFAULT_PARAMS_DICT
-            )
-            if lnl > min_marg_lnlike_for_sampling:
-                valid_sample_indices.append(int(sample_idx))
-                valid_bank_indices.append(int(bank_idx))
-                if max_filter_valid is not None and len(valid_sample_indices) >= max_filter_valid:
-                    break
+        # Determine how many candidates to process
+        n_to_process = max_filter_valid if max_filter_valid is not None else len(batch_sample_idx)
+        n_to_process = min(n_to_process, len(batch_sample_idx))
 
-        if not valid_sample_indices:
+        if min_marg_lnlike_for_sampling <= 0:
+            # Skip expensive lnlike filter: with threshold <= 0, virtually all
+            # candidates pass. Take the first n_to_process directly (batch is
+            # already shuffled, so this is unbiased).
+            valid_sample_idx = np.asarray(batch_sample_idx[:n_to_process], dtype=int)
+            valid_bank_idx = np.asarray(batch_bank_idx[:n_to_process], dtype=int)
+        else:
+            # Filter with early exit for non-trivial thresholds
+            valid_sample_indices = []
+            valid_bank_indices = []
+            for sample_idx, bank_idx in zip(batch_sample_idx, batch_bank_idx):
+                lnl = self.likelihood.lnlike(
+                    banks[int(bank_idx)].iloc[int(sample_idx)].to_dict()
+                    | config.DEFAULT_PARAMS_DICT
+                )
+                if lnl > min_marg_lnlike_for_sampling:
+                    valid_sample_indices.append(int(sample_idx))
+                    valid_bank_indices.append(int(bank_idx))
+                    if len(valid_sample_indices) >= n_to_process:
+                        break
+
+            if not valid_sample_indices:
+                return [], [], []
+
+            valid_sample_idx = np.array(valid_sample_indices, dtype=int)
+            valid_bank_idx = np.array(valid_bank_indices, dtype=int)
+
+        if len(valid_sample_idx) == 0:
             return [], [], []
-
-        valid_sample_idx = np.array(valid_sample_indices, dtype=int)
-        valid_bank_idx = np.array(valid_bank_indices, dtype=int)
 
         # Load waveforms per bank, scatter back preserving valid order
         # Cannot initialize arrays upfront: shape depends on waveform data (n_modes, n_pol, n_fbin)
