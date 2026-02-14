@@ -948,6 +948,7 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
         waveform_dirs,
         min_marg_lnlike_for_sampling,
         single_marg_info_min_n_effective_prior,
+        max_filter_valid=None,
     ):
         """
         Process a batch of (bank_idx, sample_idx) pairs for multibank extrinsic sampling.
@@ -968,6 +969,9 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
             Minimum marginalized likelihood threshold.
         single_marg_info_min_n_effective_prior : float
             Minimum n_effective_prior threshold for accepting MarginalizationInfo objects.
+        max_filter_valid : int or None
+            If set, stop the lnlike filter after collecting this many valid candidates.
+            The batch is already shuffled, so early-stopping is unbiased.
 
         Returns
         -------
@@ -978,23 +982,25 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
         used_sample_idx_batch : list[int]
             List of sample indices for accepted objects.
         """
-        # Filter in batch order (preserves shuffled order)
-        valid_mask = np.array(
-            [
-                self.likelihood.lnlike(
-                    banks[int(bank_idx)].iloc[int(sample_idx)].to_dict()
-                    | config.DEFAULT_PARAMS_DICT
-                )
-                > min_marg_lnlike_for_sampling
-                for sample_idx, bank_idx in zip(batch_sample_idx, batch_bank_idx)
-            ],
-            dtype=bool,
-        )
-        if not np.any(valid_mask):
+        # Filter in batch order (preserves shuffled order) with optional early exit
+        valid_sample_indices = []
+        valid_bank_indices = []
+        for sample_idx, bank_idx in zip(batch_sample_idx, batch_bank_idx):
+            lnl = self.likelihood.lnlike(
+                banks[int(bank_idx)].iloc[int(sample_idx)].to_dict()
+                | config.DEFAULT_PARAMS_DICT
+            )
+            if lnl > min_marg_lnlike_for_sampling:
+                valid_sample_indices.append(int(sample_idx))
+                valid_bank_indices.append(int(bank_idx))
+                if max_filter_valid is not None and len(valid_sample_indices) >= max_filter_valid:
+                    break
+
+        if not valid_sample_indices:
             return [], [], []
 
-        valid_sample_idx = np.asarray(batch_sample_idx, dtype=int)[valid_mask]
-        valid_bank_idx = np.asarray(batch_bank_idx, dtype=int)[valid_mask]
+        valid_sample_idx = np.array(valid_sample_indices, dtype=int)
+        valid_bank_idx = np.array(valid_bank_indices, dtype=int)
 
         # Load waveforms per bank, scatter back preserving valid order
         # Cannot initialize arrays upfront: shape depends on waveform data (n_modes, n_pol, n_fbin)
@@ -1247,6 +1253,11 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
                     batch_samples = sample_idx_arr[start:end]
                     batch_banks = bank_idx_arr[start:end]
 
+                    n_remaining = n_combine - len(marg_info_i)
+                    # Request 2x headroom: some valid candidates may fail
+                    # the n_effective_prior check in marginalization.
+                    max_filter_valid = max(2 * n_remaining, 32)
+
                     mi_batch, used_b_batch, used_s_batch = (
                         self.get_marg_info_batch_multibank(
                             batch_samples,
@@ -1255,6 +1266,7 @@ class CoherentExtrinsicSamplesGenerator(JSONMixin, Loggable):
                             waveform_dirs,
                             min_marg_lnlike_for_sampling,
                             single_marg_info_min_n_effective_prior,
+                            max_filter_valid=max_filter_valid,
                         )
                     )
 
