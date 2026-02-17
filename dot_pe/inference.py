@@ -1467,19 +1467,6 @@ def aggregate_and_save_results(
         },
     }
 
-    if getattr(event_data, "injection", None) is not None:
-        first_bank_id = list(banks.keys())[0]
-        clp_path = banks_dir / first_bank_id / "CoherentLikelihoodProcessor.json"
-        clp = read_json(clp_path)
-        inj_par_dic = event_data.injection["par_dic"]
-        bestfit_lnlike, lnl_marginalized = clp.get_bestfit_and_marginalized_lnlike(
-            inj_par_dic
-        )
-        summary_dict["injection"] = {
-            "bestfit_lnlike": bestfit_lnlike,
-            "lnl_marginalized": lnl_marginalized,
-        }
-
     with open(rundir / "summary_results.json", "w", encoding="utf-8") as f:
         json.dump(summary_dict, f, indent=4)
 
