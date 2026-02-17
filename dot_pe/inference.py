@@ -39,6 +39,8 @@ from cogwheel.posterior import Posterior  # noqa: E402
 from cogwheel.utils import exp_normalize, get_rundir, mkdirs, read_json  # noqa: E402
 from cogwheel.waveform import WaveformGenerator  # noqa: E402
 from cogwheel.prior import Prior  # noqa: E402
+from cogwheel import gw_prior  # noqa: E402
+from cogwheel.likelihood.reference_waveform_finder import ReferenceWaveformFinder  # noqa: E402
 from .base_sampler_free_sampling import (  # noqa: E402
     get_n_effective_total_i_e,
 )
@@ -751,6 +753,7 @@ def prepare_run_objects(
         None,
     ],
     coherent_posterior_kwargs: Dict,
+    par_dic_0: Optional[Dict] = None,
 ) -> Dict[str, Any]:
     """Prepare shared objects for inference run."""
     print("Setting paths & loading configurations...")
@@ -834,42 +837,60 @@ def prepare_run_objects(
     coherent_posterior_kwargs = (
         coherent_posterior_kwargs if coherent_posterior_kwargs else {}
     )
-    # Use a cheap approximant for reference finding (par_dic_0).
-    # The bank approximant (e.g., NRSur7dq4) is expensive and not needed here
-    # because coherent_posterior is only used for:
-    # 1. Finding par_dic_0 (reference parameters for relative binning)
-    # 2. Getting the prior
-    # Actual likelihood evaluations use pre-computed bank waveforms, not this.
-    ref_approximant = "IMRPhenomXAS"  # Fast, always available
-    posterior_kwargs = {
-        "likelihood_class": RelativeBinningLikelihood,
-        "approximant": ref_approximant,
-        "prior_class": "CartesianIASPrior",
-    } | coherent_posterior_kwargs
 
-    likelihood_kwargs = {"fbin": fbin, "pn_phase_tol": None}
-    if "likelihood_kwargs" in posterior_kwargs:
-        likelihood_kwargs = likelihood_kwargs | posterior_kwargs.pop(
-            "likelihood_kwargs"
+    if par_dic_0 is not None:
+        # Reuse pre-computed par_dic_0 from incoherent setup — skip
+        # the expensive Posterior.from_event() search entirely.
+        ref_approximant = "IMRPhenomXAS"
+        wfg = WaveformGenerator.from_event_data(
+            event_data, ref_approximant, harmonic_modes=[(2, 2)])
+        ref_wf_finder = ReferenceWaveformFinder(
+            event_data, wfg, par_dic_0, fbin=fbin, pn_phase_tol=None)
+
+        prior_class_name = coherent_posterior_kwargs.get(
+            "prior_class", "CartesianIASPrior")
+        if isinstance(prior_class_name, str):
+            prior_class_resolved = gw_prior.prior_registry[prior_class_name]
+        else:
+            prior_class_resolved = prior_class_name
+        pr = prior_class_resolved.from_reference_waveform_finder(
+            ref_wf_finder)
+
+        coherent_posterior = None  # Not needed when par_dic_0 is provided
+        print(f"Using pre-computed par_dic_0 "
+              f"(t_geocenter={par_dic_0['t_geocenter']:.6f}s)")
+    else:
+        # Original path: find par_dic_0 via Posterior.from_event()
+        ref_approximant = "IMRPhenomXAS"  # Fast, always available
+        posterior_kwargs = {
+            "likelihood_class": RelativeBinningLikelihood,
+            "approximant": ref_approximant,
+            "prior_class": "CartesianIASPrior",
+        } | coherent_posterior_kwargs
+
+        likelihood_kwargs = {"fbin": fbin, "pn_phase_tol": None}
+        if "likelihood_kwargs" in posterior_kwargs:
+            likelihood_kwargs = likelihood_kwargs | posterior_kwargs.pop(
+                "likelihood_kwargs"
+            )
+
+        ref_wf_finder_kwargs = {"time_range": (-1e-1, +1e-1), "f_ref": f_ref}
+        if "ref_wf_finder_kwargs" in posterior_kwargs:
+            ref_wf_finder_kwargs = ref_wf_finder_kwargs | posterior_kwargs.pop(
+                "ref_wf_finder_kwargs"
+            )
+        coherent_posterior = Posterior.from_event(
+            event=event_data,
+            mchirp_guess=mchirp_guess,
+            likelihood_kwargs=likelihood_kwargs,
+            ref_wf_finder_kwargs=ref_wf_finder_kwargs,
+            **posterior_kwargs,
         )
+        par_dic_0 = coherent_posterior.likelihood.par_dic_0.copy()
 
-    ref_wf_finder_kwargs = {"time_range": (-1e-1, +1e-1), "f_ref": f_ref}
-    if "ref_wf_finder_kwargs" in posterior_kwargs:
-        ref_wf_finder_kwargs = ref_wf_finder_kwargs | posterior_kwargs.pop(
-            "ref_wf_finder_kwargs"
-        )
-    coherent_posterior = Posterior.from_event(
-        event=event_data,
-        mchirp_guess=mchirp_guess,
-        likelihood_kwargs=likelihood_kwargs,
-        ref_wf_finder_kwargs=ref_wf_finder_kwargs,
-        **posterior_kwargs,
-    )
-    par_dic_0 = coherent_posterior.likelihood.par_dic_0.copy()
+        coherent_posterior.to_json(dirname=rundir)
 
-    coherent_posterior.to_json(dirname=rundir)
-
-    pr = coherent_posterior.prior
+        pr = coherent_posterior.prior
 
     coherent_score_kwargs = {
         "min_n_effective_prior": coherent_score_min_n_effective_prior
@@ -1498,6 +1519,7 @@ def run(
         None,
     ] = None,
     coherent_posterior_kwargs: Dict = {},
+    par_dic_0: Optional[Dict] = None,
 ) -> Path:
     """Run the magic integral for a given event and bank folder."""
     # Step 1: Prepare shared objects
@@ -1528,6 +1550,7 @@ def run(
         preselected_indices=preselected_indices,
         bank_logw_override=bank_logw_override,
         coherent_posterior_kwargs=coherent_posterior_kwargs,
+        par_dic_0=par_dic_0,
     )
 
     # Step 2: Incoherent selection per bank
